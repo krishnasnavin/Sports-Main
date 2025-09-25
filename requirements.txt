@@ -1,0 +1,33 @@
+# Combined requirements for PaddleDetection and PaddleVideo
+
+# GPU version of PaddlePaddle
+paddlepaddle-gpu==2.6.0
+
+# Common dependencies
+numpy<2.0
+pandas
+tqdm
+PyYAML>=5.1
+opencv-python<=4.6.0
+scipy
+scikit-image
+Pillow
+packaging
+setuptools
+
+# PaddleDetection specific
+typeguard
+visualdl>=2.2.0
+shapely
+terminaltables
+Cython
+pycocotools
+lapx
+motmetrics
+sklearn==0.0
+pyclipper
+imgaug>=0.4.0
+
+# PaddleVideo specific (including previously commented out packages)
+decord
+av
