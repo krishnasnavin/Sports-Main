@@ -20,9 +20,38 @@ from mot.tracker.jde_tracker import JDETracker
 from mot.visualize import plot_tracking
 from visualize import visualize_pose
 
+def calculate_iou(box1, box2):
+    """Calculate Intersection over Union (IoU) of two bounding boxes."""
+    x1, y1, w1, h1 = box1
+    x2, y2, w2, h2 = box2
+
+    # Get coordinates of intersection rectangle
+    inter_x1 = max(x1, x2)
+    inter_y1 = max(y1, y2)
+    inter_x2 = min(x1 + w1, x2 + w2)
+    inter_y2 = min(y1 + h1, y2 + h2)
+
+    # Calculate area of intersection
+    inter_w = max(0, inter_x2 - inter_x1)
+    inter_h = max(0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+
+    # Calculate area of both bounding boxes
+    box1_area = w1 * h1
+    box2_area = w2 * h2
+
+    # Calculate area of union
+    union_area = box1_area + box2_area - inter_area
+
+    # Calculate IoU
+    iou = inter_area / union_area if union_area > 0 else 0
+    return iou
+
+
 def track_players_in_video(model_dir, keypoint_model_dir, video_file, device, threshold, output_dir):
     """
     Runs player tracking using PP-YOLOE and ByteTrack, with pose estimation.
+    Includes logic to re-acquire lost tracks.
     """
     # --- Configuration ---
     tracker_config = {
@@ -109,15 +138,17 @@ def track_players_in_video(model_dir, keypoint_model_dir, video_file, device, th
     print(f"Video Info: {width}x{height}, {fps} FPS, {frame_count} frames")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_video_path = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(video_file))[0]}_player_tracking_pose_{timestamp}.avi")
+    output_video_path = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(video_file))[0]}_player_tracking_pose_{timestamp}_picodet.avi")
     fourcc = cv2.VideoWriter_fourcc(*'MJPG')
     writer = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
 
     # --- Tracking Loop ---
     frame_counter = 0
-    top_n_players = 2
+    top_n_players = 1
     tracked_player_ids = {}  # Maps internal track_id to our desired display id (1, 2, ...)
     next_player_id = 1
+    last_known_tlwh = {}  # Stores the last known tlwh for each display_id
+    reacquisition_iou_threshold = 0.2  # IoU threshold to re-acquire a lost track
 
     try:
         with tqdm(total=frame_count, desc=f"Tracking players in {os.path.basename(video_file)}") as pbar:
@@ -140,7 +171,7 @@ def track_players_in_video(model_dir, keypoint_model_dir, video_file, device, th
                 # Update tracker with detections for the current frame
                 online_targets_dict = tracker.update(detections_for_frame)
 
-                # --- Target Acquisition and Filtering ---
+                # --- Target Acquisition, Re-acquisition, and Filtering ---
                 filtered_tlwhs = []
                 filtered_ids = []
                 filtered_scores = []
@@ -151,12 +182,49 @@ def track_players_in_video(model_dir, keypoint_model_dir, video_file, device, th
 
                 # On the first frame with detections, acquire the main players
                 if not tracked_player_ids and all_current_targets:
-                    all_current_targets.sort(key=lambda t: t.score, reverse=True)
+                    all_current_targets.sort(key=lambda t: t.tlwh[2] * t.tlwh[3], reverse=True)
                     for target in all_current_targets[:top_n_players]:
                         if next_player_id <= top_n_players:
                             tracked_player_ids[target.track_id] = next_player_id
+                            last_known_tlwh[next_player_id] = target.tlwh
                             next_player_id += 1
                     print(f"Initial players acquired. Mapping: {tracked_player_ids}")
+
+                # --- Re-acquisition logic for lost tracks ---
+                current_tracked_internal_ids = set(t.track_id for t in all_current_targets)
+                lost_display_ids = []
+                
+                # Find which of our desired players are missing in the current frame
+                active_internal_ids = set(tracked_player_ids.keys())
+                missing_internal_ids = active_internal_ids - current_tracked_internal_ids
+
+                if missing_internal_ids and all_current_targets:
+                    unassigned_targets = [t for t in all_current_targets if t.track_id not in tracked_player_ids]
+                    
+                    for internal_id in missing_internal_ids:
+                        display_id = tracked_player_ids[internal_id]
+                        if display_id in last_known_tlwh and unassigned_targets:
+                            last_tlwh_box = last_known_tlwh[display_id]
+                            
+                            # Find the best candidate for re-acquisition based on IoU
+                            best_candidate = None
+                            max_iou = -1
+                            for candidate in unassigned_targets:
+                                iou = calculate_iou(last_tlwh_box, candidate.tlwh)
+                                if iou > max_iou:
+                                    max_iou = iou
+                                    best_candidate = candidate
+                            
+                            # If a good enough candidate is found, re-acquire it
+                            if best_candidate and max_iou > reacquisition_iou_threshold:
+                                print(f"Re-acquiring Player {display_id}. Old track ID {internal_id} lost. New track ID: {best_candidate.track_id} (IoU: {max_iou:.2f})")
+                                
+                                # Remove the old mapping and add the new one
+                                del tracked_player_ids[internal_id]
+                                tracked_player_ids[best_candidate.track_id] = display_id
+                                
+                                # Remove the re-acquired target from the unassigned list to prevent it from being used again
+                                unassigned_targets.remove(best_candidate)
 
                 # In every frame, filter to only show the acquired players
                 for target in all_current_targets:
@@ -168,6 +236,8 @@ def track_players_in_video(model_dir, keypoint_model_dir, video_file, device, th
                             filtered_tlwhs.append(tlwh)
                             filtered_ids.append(display_id)
                             filtered_scores.append(target.score)
+                            # Update the last known position
+                            last_known_tlwh[display_id] = tlwh
                 
                 # --- Pose Estimation ---
                 all_keypoints = []
@@ -179,6 +249,9 @@ def track_players_in_video(model_dir, keypoint_model_dir, video_file, device, th
                         if w <= 0 or h <= 0:
                             continue
                         crop = frame[y:y+h, x:x+w]
+
+                        if crop.size == 0:
+                            continue
                         
                         # Predict keypoints for the crop
                         inputs = keypoint_detector.preprocess([crop])
@@ -230,8 +303,8 @@ def track_players_in_video(model_dir, keypoint_model_dir, video_file, device, th
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    default_model_dir = os.path.join(script_dir, 'output_inference/ppyoloe_crn_m_300e_coco')
-    default_keypoint_model_dir = os.path.join(script_dir, 'output_inference\dark_hrnet_w32_256x192')
+    default_model_dir = os.path.join(script_dir, 'output_inference/ppyoloe_plus_crn_m_80e_coco')
+    default_keypoint_model_dir = os.path.join(script_dir, 'output_inference/tinypose_256x192')
 
     parser = argparse.ArgumentParser(description='Track players in a video with pose estimation.')
     parser.add_argument('--model_dir', type=str, default=default_model_dir,
@@ -239,13 +312,13 @@ def main():
     parser.add_argument('--keypoint_model_dir', type=str, default=default_keypoint_model_dir,
                         help='Path to the keypoint model directory.')
     parser.add_argument('--video_file', type=str, 
-                        default=r'E:\Prototype\Test\test_video3.mp4',
+                        default=r'E:\Prototype\Test\NewTest6-720.mp4',
                         help='Path to the input video file.')
-    parser.add_argument('--output_dir', type=str, default='output',
+    parser.add_argument('--output_dir', type=str, default='Player detection, tracking and pose output',
                         help='Directory to save the output video.')
     parser.add_argument('--device', type=str, default='GPU',
                         help='Device to use: CPU or GPU.')
-    parser.add_argument('--threshold', type=float, default=0.5,
+    parser.add_argument('--threshold', type=float, default=0.4,
                         help='Confidence threshold for detection.')
     
     args = parser.parse_args()
