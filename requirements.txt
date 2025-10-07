@@ -1,7 +1,7 @@
 # Combined requirements for PaddleDetection and PaddleVideo
 
 # GPU version of PaddlePaddle
-paddlepaddle-gpu==2.6.0
+paddlepaddle-gpu==3.2.0
 
 # Common dependencies
 numpy<2.0

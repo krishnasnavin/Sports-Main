@@ -994,31 +994,15 @@ def load_predictor(model_dir,
             "Predict by TensorRT mode: {}, expect device=='GPU', but device == {}"
             .format(run_mode, device))
 
-    if paddle.__version__ >= '3.0.0' or paddle.__version__ == '0.0.0':
-        model_path = model_dir
-        model_prefix = 'model'
-        infer_param = os.path.join(model_dir, 'model.pdiparams')
-        if not os.path.exists(infer_param):
-            model_prefix = 'inference'
-            if paddle.framework.use_pir_api():
-                infer_model = os.path.join(model_dir, 'inference.pdmodel')
-            else:
-                infer_model = os.path.join(model_dir, 'inference.json')
-            if not os.path.exists(infer_model):
-                raise ValueError(
-                    "Cannot find any inference model in dir: {}.".format(model_dir))
-        config = Config(model_path, model_prefix)
-        
-    else:
-        infer_model = os.path.join(model_dir, 'model.pdmodel')
-        infer_params = os.path.join(model_dir, 'model.pdiparams')
+    infer_model = os.path.join(model_dir, 'model.pdmodel')
+    infer_params = os.path.join(model_dir, 'model.pdiparams')
+    if not os.path.exists(infer_model):
+        infer_model = os.path.join(model_dir, 'inference.pdmodel')
+        infer_params = os.path.join(model_dir, 'inference.pdiparams')
         if not os.path.exists(infer_model):
-            infer_model = os.path.join(model_dir, 'inference.pdmodel')
-            infer_params = os.path.join(model_dir, 'inference.pdiparams')
-            if not os.path.exists(infer_model):
-                raise ValueError(
-                    "Cannot find any inference model in dir: {},".format(model_dir))
-        config = Config(infer_model, infer_params)
+            raise ValueError(
+                "Cannot find any inference model in dir: {},".format(model_dir))
+    config = Config(infer_model, infer_params)
  
     if device == 'GPU':
         # initial GPU memory(M), device ID

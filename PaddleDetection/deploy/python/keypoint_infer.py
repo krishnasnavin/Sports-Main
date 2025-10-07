@@ -42,7 +42,8 @@ from infer import Detector, get_test_images, print_arguments
 # Global dictionary
 KEYPOINT_SUPPORT_MODELS = {
     'HigherHRNet': 'keypoint_bottomup',
-    'HRNet': 'keypoint_topdown'
+    'HRNet': 'keypoint_topdown',
+    'LiteHRNet': 'keypoint_topdown'
 }
 
 
